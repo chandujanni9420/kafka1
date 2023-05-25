@@ -1,0 +1,127 @@
+1.) MySQL Table (Table should have some column like created_at or updated_at so that can be used for incremental read)
+CREATE TABLE <table_name> (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+2.) Write a python script which is running in infinite loop and inserting 4-5 dummy/dynamically prepared records
+    in MySQL Table
+import mysql.connector
+
+mydb = mysql.connector.connect(
+  host="localhost",
+  user="<username>",
+  password="<password>",
+  database="<database_name>"
+)
+
+mycursor = mydb.cursor()
+
+sql = "INSERT INTO <table_name> (name) VALUES (%s)"
+val = ("John")
+mycursor.execute(sql, val)
+
+mydb.commit()
+print(mycursor.rowcount, "record inserted.")
+
+3.) Setup Confluent Kafka
+Download and install Confluent Kafka from https://www.confluent.io/download/.
+Extract the downloaded file and navigate to the extracted directory.
+Start Zookeeper using the command bin/zookeeper-server-start.sh config/zookeeper.properties.
+Start Kafka broker using the command bin/kafka-server-start.sh config/server.properties.
+
+4.) Create Topic
+Create a topic using the command bin/kafka-topics.sh --create --topic <topic_name> --zookeeper localhost:2181 --partitions 1 --replication-factor 1.
+5.) Create json schema on schema registry (depends on what kind of data you are publishing in mysql table)
+Open a web browser and navigate to the Confluent Control Center.
+Click on the Schema Registry tab and then click on the + Add a schema button.
+Enter a name for the schema and paste the JSON schema.
+Click on the Add Schema button to save the schema.
+6.) Write a producer code which will read the data from MySQL table incrementally (hint : use and maintain create_at column)
+import mysql.connector
+from kafka import KafkaProducer
+import json
+
+mydb = mysql.connector.connect(
+  host="localhost",
+  user="<username>",
+  password="<password>",
+  database="<database_name>"
+)
+
+mycursor = mydb.cursor(dictionary=True)
+
+sql = "SELECT * FROM <table_name> WHERE created_at > %s"
+val = ("2022-01-01 00:00:00",)  # replace with the last processed timestamp
+mycursor.execute(sql, val)
+
+producer = KafkaProducer(bootstrap_servers=['localhost:9092'])
+
+for row in mycursor.fetchall():
+  message = json.dumps(row).encode('utf-8')
+  producer.send('<topic
+
+7.) Producer will publish data in Kafka Topic
+8.) Write consumer group to consume data from Kafka topic
+from kafka import KafkaConsumer
+from cassandra.cluster import Cluster
+
+# Create a Kafka consumer
+consumer = KafkaConsumer(
+    'topic_name',
+    bootstrap_servers=['localhost:9092'],
+    group_id='group_id',
+    auto_offset_reset='earliest')
+
+# Connect to Cassandra cluster and create a session
+cluster = Cluster(['127.0.0.1'])
+session = cluster.connect()
+
+# Create a keyspace and table in Cassandra
+session.execute("""
+    CREATE KEYSPACE IF NOT EXISTS my_keyspace
+    WITH REPLICATION = { 'class' : 'SimpleStrategy', 'replication_factor' : 1 };
+""")
+
+session.execute("""
+    CREATE TABLE IF NOT EXISTS my_keyspace.my_table (
+        id int PRIMARY KEY,
+        message text
+    );
+""")
+
+# Process Kafka messages and write them to Cassandra
+for message in consumer:
+    # Perform some transformation on the message data
+    transformed_data = message.value.decode('utf-8').upper()
+
+    # Write the transformed data to Cassandra
+    session.execute("""
+        INSERT INTO my_keyspace.my_table (id, message)
+        VALUES (%s, %s)
+    """, (message.key, transformed_data))
+
+9.) In Kafka consumer code do some changes or transformation for each record and write it in Cassandra table
+Properties props = new Properties();
+props.put("bootstrap.servers", "localhost:9092");
+props.put("group.id", "my-group");
+
+KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
+consumer.subscribe(Collections.singletonList("my-topic"));
+
+Cluster cluster = Cluster.builder().addContactPoint("localhost").build();
+Session session = cluster.connect("my-keyspace");
+
+while (true) {
+    ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
+    for (ConsumerRecord<String, String> record : records) {
+        // Perform transformations on the record's value
+        String transformedValue = record.value().toUpperCase();
+
+        // Write the transformed record to Cassandra
+        String query = String.format("INSERT INTO my_table (id, value) VALUES ('%s', '%s')", record.key(), transformedValue);
+        session.execute(query);
+    }
+}
